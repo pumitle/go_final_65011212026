@@ -16,6 +16,7 @@ func ProductController(router *gin.Engine) {
 
 	}
 	router.POST("/cart", createOrUpdateCart)
+	router.GET("/showcartbyid", getCartsByCustomerID)
 
 }
 
@@ -131,4 +132,113 @@ func createOrUpdateCart(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Product added to cart successfully"})
+}
+
+// เส้นแสดงรถเข็นทั้งหมด
+func getCartsByCustomerID(c *gin.Context) {
+	// รับ customer_id จาก query parameter
+	customerID := c.DefaultQuery("customer_id", "")
+	if customerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "customer_id is required"})
+		return
+	}
+
+	// แปลง customer_id จาก string เป็น int
+	customerIDInt, err := strconv.Atoi(customerID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid customer_id"})
+		return
+	}
+
+	// ค้นหารถเข็นทั้งหมดของลูกค้า
+	var carts []model.Cart
+	if err := DB.Where("customer_id = ?", customerIDInt).Find(&carts).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch carts"})
+		return
+	}
+
+	// ถ้าลูกค้าไม่มีรถเข็น
+	if len(carts) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No carts found for this customer"})
+		return
+	}
+
+	// สร้างตัวแปรเก็บข้อมูลรถเข็นทั้งหมด
+	var cartDetails []struct {
+		CartID   int    `json:"cart_id"`
+		CartName string `json:"cart_name"`
+		Items    []struct {
+			ProductID   int     `json:"product_id"`
+			ProductName string  `json:"product_name"`
+			Quantity    int     `json:"quantity"`
+			Price       float64 `json:"price"`
+			TotalPrice  float64 `json:"total_price"`
+		} `json:"items"`
+	}
+
+	// ดึงข้อมูลของสินค้าจากแต่ละรถเข็น
+	for _, cart := range carts {
+		var cartDetail struct {
+			CartID   int    `json:"cart_id"`
+			CartName string `json:"cart_name"`
+			Items    []struct {
+				ProductID   int     `json:"product_id"`
+				ProductName string  `json:"product_name"`
+				Quantity    int     `json:"quantity"`
+				Price       float64 `json:"price"`
+				TotalPrice  float64 `json:"total_price"`
+			} `json:"items"`
+		}
+
+		// เพิ่มข้อมูลรถเข็น
+		cartDetail.CartID = cart.CartID
+		cartDetail.CartName = cart.CartName
+
+		// ค้นหาสินค้าในรถเข็นนี้
+		var cartItems []model.CartItem
+		if err := DB.Where("cart_id = ?", cart.CartID).Find(&cartItems).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch cart items"})
+			return
+		}
+
+		// ดึงรายละเอียดสินค้าและคำนวณราคาสินค้าในรถเข็น
+		for _, cartItem := range cartItems {
+			var product model.Product
+			if err := DB.Where("product_id = ?", cartItem.ProductID).First(&product).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch product details"})
+				return
+			}
+
+			// แปลง Price จาก string เป็น float64 ก่อนคำนวณ
+			price, err := strconv.ParseFloat(product.Price, 64) // แปลง Price จาก string เป็น float64
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse product price"})
+				return
+			}
+
+			// คำนวณราคาของสินค้า
+			totalPrice := float64(cartItem.Quantity) * price
+
+			// เพิ่มสินค้าลงในรายการ
+			cartDetail.Items = append(cartDetail.Items, struct {
+				ProductID   int     `json:"product_id"`
+				ProductName string  `json:"product_name"`
+				Quantity    int     `json:"quantity"`
+				Price       float64 `json:"price"`
+				TotalPrice  float64 `json:"total_price"`
+			}{
+				ProductID:   product.ProductID,
+				ProductName: product.ProductName,
+				Quantity:    cartItem.Quantity,
+				Price:       price, // ใช้ราคาที่แปลงเป็น float64
+				TotalPrice:  totalPrice,
+			})
+		}
+
+		// เพิ่มข้อมูลของ cartDetail ลงใน cartDetails
+		cartDetails = append(cartDetails, cartDetail)
+	}
+
+	// ส่งข้อมูลทั้งหมดกลับไป
+	c.JSON(http.StatusOK, gin.H{"carts": cartDetails})
 }
